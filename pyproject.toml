@@ -49,5 +49,5 @@ packages = ["src/similarity"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "tests"]
-filterwarnings = ["ignore::DeprecationWarning:fastapi.testclient", "ignore:Using `httpx` with `starlette.testclient`"]
+filterwarnings = ["ignore::DeprecationWarning:fastapi.testclient"]
 addopts = "-q"
