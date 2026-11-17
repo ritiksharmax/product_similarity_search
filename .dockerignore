@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+artifacts
+reports
+tests
+k8s
+data/*.ldjson
+data/*.json
+*.md
+!README.md

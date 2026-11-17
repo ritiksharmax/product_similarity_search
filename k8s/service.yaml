@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-similarity
+  labels: {app.kubernetes.io/name: product-similarity}
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: product-similarity}
+  ports:
+    - {name: http, port: 80, targetPort: http}

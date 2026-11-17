@@ -1,0 +1,49 @@
+[project]
+name = "product-similarity"
+version = "0.1.0"
+description = "Product similarity search over the Amazon Fashion 2020 dataset (SAP CX technical exercise)"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy>=1.26,<3",
+    "pandas>=2.1",
+    "scikit-learn>=1.4",
+    "faiss-cpu>=1.8",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic-settings>=2.2",
+]
+
+[project.optional-dependencies]
+# "Accurate" text encoder: transformer sentence embeddings (pulls in torch).
+minilm = ["sentence-transformers>=2.7", "torch>=2.2"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+    "tabulate>=0.10.0",
+]
+
+# On Linux (Docker builder) take torch from the CPU-only index: the default PyPI wheel
+# bundles CUDA (~2.5 GB) that a CPU build machine never uses.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/similarity"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+filterwarnings = ["ignore::DeprecationWarning:fastapi.testclient"]
+addopts = "-q"
