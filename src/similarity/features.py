@@ -6,6 +6,7 @@ Each attribute becomes its own block, and every block is either unit-length or a
 block      encoding                                             cosine between two products
 =========  ===================================================  ===============================
 text       TF-IDF+SVD (LSA) or MiniLM of ``product_name``       semantic similarity of names
+image      CLIP (or ResNet50) image embedding, PCA to 128-d     visual similarity of photos
 category   one-hot over Amazon child categories                 1 if same category else 0
 brand      fixed random unit vector per brand (128-d)           1 if same brand else ~0
 colour     multi-hot over a base palette                        overlap of colour sets
@@ -41,6 +42,8 @@ N(0, 1/d) cross-talk, about ±0.09 at d=128, which the brand weight scales down 
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -52,6 +55,8 @@ from sklearn.pipeline import FeatureUnion, make_pipeline
 
 from similarity.config import DEFAULT_WEIGHTS, Settings
 from similarity.data import BASE_COLOURS, percentile_rank
+
+log = logging.getLogger(__name__)
 
 BLOCK_ORDER: tuple[str, ...] = tuple(DEFAULT_WEIGHTS)
 
@@ -174,6 +179,33 @@ def make_text_encoder(settings: Settings) -> TextEncoder:
     return TfidfLsaEncoder(settings.text_dim, settings.seed)
 
 
+# --------------------------------------------------------------------------- image block
+
+
+def load_image_block(catalog: pd.DataFrame, settings: Settings) -> tuple[np.ndarray, dict]:
+    """Look up each product's precomputed image vector; missing -> zero row (fallback).
+
+    Images are embedded offline (scripts/embed_images.py) because fetching and running a CNN
+    over 30k photos does not belong in a request path or a Docker build. The file holds
+    ``uniq_id``, unit-norm float16 ``vectors`` and a JSON ``meta`` describing model and PCA.
+    """
+    path = settings.image_embeddings_path
+    if not path or not path.exists():
+        log.warning("no image embeddings at %s; image block is empty (falls back to other attributes)", path)
+        return np.zeros((len(catalog), settings.image_dim), dtype=np.float32), {"source": None}
+    with np.load(path, allow_pickle=False) as npz:
+        ids = npz["uniq_id"].astype(str)
+        vectors = npz["vectors"].astype(np.float32)
+        meta = json.loads(str(npz["meta"])) if "meta" in npz else {}
+    row = {pid: i for i, pid in enumerate(ids)}
+    block = np.zeros((len(catalog), vectors.shape[1]), dtype=np.float32)
+    for i, pid in enumerate(catalog["uniq_id"]):
+        j = row.get(pid)
+        if j is not None:
+            block[i] = vectors[j]
+    return l2_normalise(block), {"source": path.name, **meta}
+
+
 # --------------------------------------------------------------------------- block matrix
 
 
@@ -183,6 +215,7 @@ class BlockMatrix:
 
     data: np.ndarray  # (n_products, total_dim) float32, every block unit-norm or zero
     slices: dict[str, slice] = field(default_factory=dict)
+    info: dict = field(default_factory=dict)  # provenance, e.g. which image model was used
 
     @property
     def dim(self) -> int:
@@ -218,6 +251,7 @@ def build_blocks(catalog: pd.DataFrame, settings: Settings, text_encoder: TextEn
     blocks: dict[str, np.ndarray] = {}
 
     blocks["text"] = encoder.fit_transform(catalog["product_name"].fillna("").tolist())
+    blocks["image"], image_info = load_image_block(catalog, settings)
 
     categories = sorted(c for c in catalog["category"].dropna().unique())
     cat_index = {c: i for i, c in enumerate(categories)}
@@ -253,4 +287,4 @@ def build_blocks(catalog: pd.DataFrame, settings: Settings, text_encoder: TextEn
         slices[name] = slice(start, start + width)
         start += width
     data = np.ascontiguousarray(np.hstack([blocks[n] for n in BLOCK_ORDER]), dtype=np.float32)
-    return BlockMatrix(data=data, slices=slices)
+    return BlockMatrix(data=data, slices=slices, info={"image": image_info})

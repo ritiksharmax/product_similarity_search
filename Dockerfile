@@ -37,6 +37,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY src ./src
 COPY scripts ./scripts
 COPY data/archive.zip ./data/archive.zip
+# Image embeddings are precomputed offline (scripts/fetch_images.py + embed_images.py): fetching
+# 30k photos inside a build would be slow and depend on Amazon's CDN. ~8 MB, PCA'd CLIP vectors.
+COPY data/image_embeddings.npz ./data/image_embeddings.npz
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable \
  && UV_PROJECT_ENVIRONMENT=/opt/buildenv uv sync --frozen --no-dev --no-editable $([ "$ENCODER" = "minilm" ] && echo --extra minilm)

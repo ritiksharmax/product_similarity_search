@@ -16,7 +16,8 @@ def catalog():
 
 
 def make_settings(tmp_path: Path | None = None, **overrides) -> Settings:
-    kw = dict(data_path=FIXTURE, text_dim=8, brand_dim=64, cache_size=64)
+    kw = dict(data_path=FIXTURE, text_dim=8, brand_dim=64, cache_size=64,
+              image_embeddings_path=FIXTURE.with_name("image_embeddings.npz"))
     if tmp_path is not None:
         kw["artifacts_dir"] = tmp_path / "artifacts"
     kw.update(overrides)
