@@ -165,3 +165,12 @@ cython_debug/
 
 # Built similarity artifacts (regenerate with scripts/build_artifacts.py)
 artifacts/
+
+# Downloaded product images (regenerate with scripts/fetch_images.py)
+data/images/
+
+# macOS
+.DS_Store
+
+# Per-model comparison embeddings (regenerate with scripts/embed_images.py); data/image_embeddings.npz ships
+data/image_embeddings_*.npz

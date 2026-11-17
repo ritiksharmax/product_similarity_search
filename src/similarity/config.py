@@ -19,36 +19,41 @@ DEFAULT_DATA_FILE = (
 )
 
 # Relative importance of each attribute block. Every block is unit-normalised and scaled by
-# sqrt(weight), so the final score is exactly sum(weight_b * cosine_b) (see features.py), and
-# weights are normalised to sum to 1, so scores are a weighted average in [-1, 1]. Values are
-# relative: DEFAULT_WEIGHTS sums to 0.90 (grid-search units), which rescales text to 0.33.
+# sqrt(weight), so the final score is exactly sum(weight_b * cosine_b) (see features.py). Weights
+# are normalised to sum to 1 (DEFAULT_WEIGHTS already does), so scores are a weighted average in [-1, 1].
 #
-# The values were chosen by a small grid search (scripts/tune_weights.py) that maximises
-# "also-bought hit@10" on one query sample and is reported on a disjoint held-out sample
-# (scripts/evaluate.py). This setting ranked top-2 for *both* text encoders. Held-out effect
-# vs the initial hand-set weights (text .45 / category .20 / brand .15 / price .10):
-#   tfidf: hit@10 0.440 -> 0.461, price drift 0.178 -> 0.135.
-# Interpretation: price band matters more to shoppers than we guessed, and once text is
-# present, brand is partly redundant (the brand usually appears in the product name).
+# Chosen by grid search (scripts/tune_weights.py, maximising "also-bought hit@10" on a tuning
+# sample) and reported on a disjoint held-out sample (scripts/evaluate.py). Two stages:
+#   1. Text era: price band mattered more than guessed, and brand is partly redundant once text
+#      is present (the brand usually appears in the product name). tfidf hit@10 0.440 -> 0.461.
+#   2. Image block (CLIP, PCA-128): hit@10 rises on a broad plateau for image weights 0.3-0.7
+#      (grid units, tuning split 0.559 -> 0.62-0.63). We take the low end of the plateau with
+#      category kept at 0.20: category@10 stays ~0.97 instead of ~0.92, and 0.5% of products
+#      have no photo, so leaning on images less is the more robust choice.
 #   text      - product_name carries product *type* and usually the brand.
+#   image     - CLIP photo embedding: style, pattern, silhouette (99.5% coverage).
 #   category  - Amazon's curated child category (83% coverage).
 #   price     - shoppers compare within a price band.
 #   brand     - explicit brand match (72% coverage after removing "Generic").
-#   colour    - useful but only ~20% coverage.
+#   colour    - useful but only ~20% coverage (the photo carries colour too).
 #   rating    - weak: most products have 0-2 reviews (shrunk, see data.py).
 #   weight    - 79% missing and mostly a shipping artefact, so a token weight.
 HAND_SET_WEIGHTS: dict[str, float] = {
     "text": 0.45, "category": 0.20, "brand": 0.15, "price": 0.10, "colour": 0.05, "rating": 0.03, "weight": 0.02,
 }
+# Grid point text .45 / image .30 / category .20 / price .20 / brand .10 / colour .05 / rating .03 /
+# weight .02, rescaled to sum to 1 and rounded.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "text": 0.30,
-    "category": 0.20,
-    "brand": 0.10,
-    "price": 0.20,
-    "colour": 0.05,
-    "rating": 0.03,
+    "text": 0.33,
+    "image": 0.22,
+    "category": 0.15,
+    "brand": 0.07,
+    "price": 0.15,
+    "colour": 0.04,
+    "rating": 0.02,
     "weight": 0.02,
 }
+assert abs(sum(DEFAULT_WEIGHTS.values()) - 1.0) < 1e-9
 
 
 class Settings(BaseSettings):
@@ -65,6 +70,12 @@ class Settings(BaseSettings):
     text_dim: int = 128
     brand_dim: int = 128
     minilm_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+    # Precomputed image embeddings (scripts/fetch_images.py + embed_images.py): uniq_id -> PCA'd
+    # CLIP/ResNet vector. Products without one get a zero image block; if the file is absent the
+    # whole block is zero and similarity falls back to the other attributes.
+    image_embeddings_path: Path = Path("data/image_embeddings.npz")
+    image_dim: int = 128  # block width used when the file is absent
 
     # Bayesian rating shrinkage strength: a product needs ~m reviews before its own
     # average outweighs the catalogue mean.

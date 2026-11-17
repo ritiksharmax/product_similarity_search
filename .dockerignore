@@ -9,5 +9,7 @@ tests
 k8s
 data/*.ldjson
 data/*.json
+data/images
+data/image_embeddings_*.npz
 *.md
 !README.md

@@ -133,3 +133,44 @@ def test_hnsw_prefix_consistency_on_full_catalogue():
         top = eng.find_similar_products(pid, 100)
         assert eng.find_similar_products(pid, 5) == top[:5]
         assert eng.find_similar_products(pid, 37) == top[:37]
+
+
+# ------------------------------------------------------------------ image block
+
+
+def test_image_block_unit_or_zero_and_fallback(catalog):
+    blocks = build_blocks(catalog, make_settings())
+    img = blocks.data[:, blocks.slices["image"]]
+    norms = np.linalg.norm(img, axis=1)
+    has_image = set(catalog["uniq_id"][norms > 0.99])
+    assert {"sa3", "cap1"}.isdisjoint(has_image)          # no photo -> zero block
+    assert np.allclose(norms[norms > 0], 1.0, atol=1e-3)
+    assert blocks.info["image"]["model"] == "fixture"
+
+
+def test_missing_image_file_gives_empty_block_and_engine_still_answers(tmp_path, catalog):
+    s = make_settings(image_embeddings_path=tmp_path / "absent.npz")
+    eng = SimilarityEngine.build(s, catalog)
+    assert eng.blocks.coverage()["image"] == 0.0
+    assert eng.find_similar_products("ts1", 1) == ["ts5"]
+
+
+def test_image_weight_drives_ranking(catalog):
+    eng = SimilarityEngine.build(make_settings(backend="exact", weights={"image": 1.0}), catalog)
+    # ts1 shares its "look" with ts5 and ts2; image-only similarity must rank those first.
+    assert set(eng.find_similar_products("ts1", 2)) == {"ts5", "ts2"}
+    # A product without an image has nothing to compare: every score is 0, ties broken deterministically.
+    assert all(m.score == 0 for m in eng.similar("cap1", 3))
+
+
+def test_manifest_records_image_provenance_and_stale_blocks_rebuild(tmp_path, catalog):
+    import json
+
+    s = make_settings(tmp_path, backend="exact")
+    SimilarityEngine.build(s, catalog).save(s.artifacts_dir)
+    manifest = json.loads((s.artifacts_dir / "manifest.json").read_text())
+    assert manifest["image"]["model"] == "fixture" and "image" in manifest["coverage"]
+    # Artifacts from before the image block existed are detected and rebuilt, not half-loaded.
+    del manifest["slices"]["image"]
+    (s.artifacts_dir / "manifest.json").write_text(json.dumps(manifest))
+    assert "image" in SimilarityEngine.load(s).blocks.slices

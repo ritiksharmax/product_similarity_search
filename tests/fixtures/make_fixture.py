@@ -28,7 +28,26 @@ RECORDS = [
     rec("cap1", "Men's Embroidered Baseball Cap Black", "E4hats", "4329.00", "90 Grams", child=None, colour="Black"),
 ]
 
+# Image "looks": products sharing a look have near-identical photos. sa3 and cap1 have no image,
+# exercising the zero-block fallback.
+IMAGE_LOOKS = {"ts1": "tee", "ts5": "tee", "ts2": "tee", "ts3": "sport", "ts4": "plain", "ts4b": "plain",
+               "sa1": "saree", "sa2": "saree", "ku1": "kurti", "ku2": "kurti"}
+
+
+def write_image_embeddings(path: Path, dim: int = 16) -> None:
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    looks = {look: rng.standard_normal(dim) for look in sorted(set(IMAGE_LOOKS.values()))}
+    ids = sorted(IMAGE_LOOKS)
+    vecs = np.stack([looks[IMAGE_LOOKS[i]] + 0.05 * rng.standard_normal(dim) for i in ids])
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    np.savez_compressed(path, uniq_id=np.array(ids), vectors=vecs.astype(np.float16),
+                        meta=json.dumps({"model": "fixture", "pca_dim": dim}))
+
+
 if __name__ == "__main__":
     out = Path(__file__).with_name("sample.ldjson")
     out.write_text("\n".join(json.dumps(r) for r in RECORDS) + "\n")
-    print(f"wrote {len(RECORDS)} records to {out}")
+    write_image_embeddings(Path(__file__).with_name("image_embeddings.npz"))
+    print(f"wrote {len(RECORDS)} records to {out} (+ image_embeddings.npz)")

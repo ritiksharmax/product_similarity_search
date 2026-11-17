@@ -25,7 +25,7 @@ import pandas as pd
 
 from similarity.config import Settings, get_settings
 from similarity.data import load_catalog
-from similarity.features import BlockMatrix, build_blocks
+from similarity.features import BLOCK_ORDER, BlockMatrix, build_blocks
 from similarity.index import ExactIndex, HnswIndex, SimilarityIndex
 
 log = logging.getLogger(__name__)
@@ -104,6 +104,8 @@ class SimilarityEngine:
             "slices": {k: [s.start, s.stop] for k, s in self.blocks.slices.items()},
             "n_products": len(self.ids),
             "dim": self.blocks.dim,
+            "image": self.blocks.info.get("image"),
+            "coverage": {k: round(v, 4) for k, v in self.blocks.coverage().items()},
             "hnsw": {"m": self.settings.hnsw_m, "ef_construction": self.settings.hnsw_ef_construction,
                      "metric": self.settings.hnsw_metric}
             if isinstance(self.index, HnswIndex) else None,
@@ -119,6 +121,10 @@ class SimilarityEngine:
             log.warning("no artifacts in %s; building from %s", directory, settings.data_path)
             return cls.build(settings)
         manifest = json.loads(manifest_path.read_text())
+        if set(manifest["slices"]) != set(BLOCK_ORDER):
+            log.warning("artifacts have blocks %s, code expects %s; rebuilding",
+                        sorted(manifest["slices"]), sorted(BLOCK_ORDER))
+            return cls.build(settings)
         if manifest["encoder"] != settings.encoder:
             if not Path(settings.data_path).exists():
                 # Serving images ship artifacts but not the raw data, so a rebuild is impossible.
@@ -135,6 +141,7 @@ class SimilarityEngine:
         blocks = BlockMatrix(
             data=np.load(directory / "blocks.npy"),
             slices={k: slice(a, b) for k, (a, b) in manifest["slices"].items()},
+            info={"image": manifest.get("image")},
         )
         catalog = pd.read_json(directory / "catalog.jsonl", orient="records", lines=True,
                                dtype={"uniq_id": str, "asin": str})

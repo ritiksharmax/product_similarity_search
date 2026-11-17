@@ -17,6 +17,9 @@ dependencies = [
 [project.optional-dependencies]
 # "Accurate" text encoder: transformer sentence embeddings (pulls in torch).
 minilm = ["sentence-transformers>=2.7", "torch>=2.2"]
+# Offline image embeddings (scripts/embed_images.py): CLIP via sentence-transformers, ResNet50 via
+# torchvision. Only needed to regenerate data/image_embeddings.npz, never at serving time.
+images = ["sentence-transformers>=2.7", "torch>=2.2", "torchvision>=0.17", "pillow>=10"]
 
 [dependency-groups]
 dev = [
@@ -34,6 +37,7 @@ explicit = true
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [build-system]
 requires = ["hatchling"]

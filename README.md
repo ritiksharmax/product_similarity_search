@@ -1,19 +1,21 @@
 # Product Similarity Search: Amazon Fashion 2020
 
 The solution to the [SAP CX technical exercise](docs/EXERCISE.md). Given a product `uniq_id`, return the
-`num_similar` most similar products across **brand, category, product name, price, colour, rating and weight**.
+`num_similar` most similar products across **brand, category, product name, product image, price, colour,
+rating and weight**.
 
 | Part | Status | Where |
 |---|---|---|
 | 1. `find_similar_products` | ✅ | [`src/similarity/engine.py`](src/similarity/engine.py) |
 | 2. FastAPI `GET /find_similar_products`, Docker, Kubernetes | ✅ | [`app.py`](app.py), [`Dockerfile`](Dockerfile), [`k8s/`](k8s) |
 | 3. Bonus: vector search at scale | ✅ FAISS HNSW | [`src/similarity/index.py`](src/similarity/index.py), [`reports/benchmark.md`](reports/benchmark.md) |
+| Optional: multimodal (text + image) | ✅ CLIP vs ResNet50, measured | [`scripts/embed_images.py`](scripts/embed_images.py), [`reports/image_comparison.md`](reports/image_comparison.md) |
 
 **Headline numbers** (held-out queries, see [Evaluation](#evaluation)):
 
-- **Accuracy:** 53% of products have at least one product *that customers actually co-bought* in their top 10 (random: 0.2%).
-- **Category match:** 98% of returned neighbours share the query's category.
-- **Latency:** 0.73 ms p50 per HTTP request at 30k products. At 1M vectors HNSW answers in 0.12 ms vs 44 ms for brute force (recall@10 0.985).
+- **Accuracy:** 60% of products have at least one product *that customers actually co-bought* in their top 10 (random: 0.2%). Adding product photos raised this from 53%.
+- **Category match:** 97% of returned neighbours share the query's category.
+- **Latency:** at 1M vectors HNSW answers in 0.21 ms vs 57 ms for brute force (recall@10 0.999).
 
 ---
 
@@ -21,7 +23,7 @@ The solution to the [SAP CX technical exercise](docs/EXERCISE.md). Given a produ
 1. [Quickstart](#quickstart)
 2. [Data findings that shaped the design](#data-findings-that-shaped-the-design)
 3. [Part 1: the similarity function](#part-1-the-similarity-function)
-4. [Evaluation: efficient vs accurate](#evaluation)
+4. [Evaluation: efficient vs accurate, and images](#evaluation)
 5. [Part 2: microservice, Docker, Kubernetes](#part-2-microservice-docker-kubernetes)
 6. [Part 3: vector search at scale (HNSW)](#part-3-vector-search-at-scale-hnsw)
 7. [Trade-offs, limitations, next steps](#trade-offs-limitations-next-steps)
@@ -42,6 +44,15 @@ curl 'localhost:8000/find_similar_products?product_id=26d41bdc1495de290bc8e6062d
 curl 'localhost:8000/find_similar_products?product_id=26d41bdc1495de290bc8e6062d927729&num_similar=3&explain=true'
 ```
 
+Image embeddings ship precomputed in `data/image_embeddings.npz` (8 MB, CLIP, PCA-128), so the steps
+above need no network. To regenerate them (~30 min download, ~5 min embedding on Apple MPS):
+
+```bash
+uv sync --extra images
+uv run python scripts/fetch_images.py                                  # -> data/images/ (272 MB, gitignored)
+uv run python scripts/embed_images.py --models clip resnet50 --ship clip
+```
+
 As a library (the exact signature from the exercise):
 
 ```python
@@ -53,19 +64,20 @@ Docker and Kubernetes:
 
 ```bash
 docker build -t product-similarity:1.0.0 .                            # accurate (MiniLM), the default
-docker build --build-arg ENCODER=tfidf -t product-similarity:tfidf .  # efficient; no model download
+docker build --build-arg ENCODER=tfidf -t product-similarity:tfidf .  # efficient: faster build, no model download
 docker run --rm -p 8000:8000 product-similarity:1.0.0
 
-kind create cluster && kind load docker-image product-similarity:1.0.0   # or minikube
+kind create cluster --name sim && kind load docker-image product-similarity:1.0.0 --name sim
 kubectl apply -k k8s/ && kubectl port-forward svc/product-similarity 8000:80
+uv run python scripts/smoke_test.py http://localhost:8000
 ```
 
 Tests and reports:
 
 ```bash
-uv run pytest                                   # 60 tests: parsers, engine invariants, API, ANN recall
+uv run pytest                                   # 64 tests: parsers, engine invariants, image block, API, ANN recall
 uv run python scripts/smoke_test.py http://localhost:8000   # end-to-end checks against a running service
-uv run python scripts/evaluate.py               # -> reports/evaluation.md  (needs --extra minilm)
+uv run python scripts/evaluate.py --image-models clip resnet50   # -> reports/evaluation.md (needs --extra minilm)
 uv run python scripts/benchmark.py --scales 30000 300000 1000000   # -> reports/benchmark.md
 ```
 
@@ -85,6 +97,7 @@ that would quietly break a naive "cosine over brand/price/weight/rating" approac
 | `colour` | Present for only 20%, free text `Black\|Navy Blue` | Map to a 22-colour base palette, multi-hot |
 | category | `sales_rank_in_child_category` key: 219 values, 83% coverage, cleanly curated (`MensT_Shirts`, `WomensSarees`) | Strong product-type signal; one-hot |
 | `product_name` | Always present, median 50 chars, carries product type **and usually the brand** | Main text signal |
+| images (`medium`) | Every product lists photo URLs; 29,861 (99.5%) download successfully, 134 return 404 | First photo per product → CLIP → PCA-128 image block |
 | `asin` | 451 ASINs appear twice (re-crawls with different `uniq_id`) | Never return a re-crawl of the query product as "similar" |
 | `other_items_customers_buy` | Names of co-purchased products; 18k products map back to catalogue items | **Not used as a feature** but kept as held-out behavioural ground truth for evaluation |
 
@@ -100,6 +113,7 @@ unit-length or all-zero:
 | Block | Encoding | Cosine between two products |
 |---|---|---|
 | text | TF-IDF→SVD (LSA, 128-d) *or* MiniLM (384-d) over `product_name` | semantic name similarity |
+| image | CLIP ViT-B/32 photo embedding, PCA to 128-d, precomputed offline | visual similarity: style, print, silhouette |
 | category | one-hot over 219 child categories | 1 if same category, else 0 |
 | brand | fixed pseudo-random unit vector per brand (128-d) | 1 if same brand, else ≈0 |
 | colour | multi-hot base palette, L2-normalised | colour-set overlap |
@@ -132,17 +146,21 @@ Design choices in that table:
 
 ### Weights
 
-`text .30 · category .20 · price .20 · brand .10 · colour .05 · rating .03 · weight .02`, overridable at
-runtime via `SIM_WEIGHTS`. Weights are *relative*: they are rescaled to sum to 1 (these sum to 0.90,
-so text's effective share is 0.33). Rescaling never changes a ranking, only the score scale.
+`text .33 · image .22 · category .15 · price .15 · brand .07 · colour .04 · rating .02 · weight .02`
+(sums to 1), overridable at runtime via `SIM_WEIGHTS`. Custom weights are *relative*: they are
+rescaled to sum to 1, which never changes a ranking, only the score scale.
 
-These came from a small grid search ([`scripts/tune_weights.py`](scripts/tune_weights.py)) on one
-query sample, reported on a **disjoint held-out sample**. The same setting ranked top-2 for both text
-encoders. Two things it taught me that I would not have guessed:
+These came from a grid search in two stages ([`scripts/tune_weights.py`](scripts/tune_weights.py)) on
+one query sample, reported on a **disjoint held-out sample**. Stage 1 tuned the text-era weights
+(the same setting ranked top-2 for both text encoders); stage 2 added the image weight, which sits
+on a broad plateau (see [Images](#images-the-largest-single-gain)). Things it taught me that I would
+not have guessed:
 
 - **Price band matters more than I thought.** Raising the price weight from 0.10 to 0.20 cut price
   drift by a quarter *and* increased co-purchase hits.
 - **Brand is partly redundant once text is in.** The brand usually appears in the product name.
+- **Photos are worth about as much as names.** CLIP on photos alone finds co-purchases as well as
+  TF-IDF on names alone, and the two are complementary.
 
 ### Ranking rules
 
@@ -162,8 +180,8 @@ encoders. Two things it taught me that I would not have guessed:
 
 ### Offline / online split
 
-`scripts/build_artifacts.py` does all the heavy work once: parsing, text encoding and HNSW
-construction. It writes `artifacts/` (`blocks.npy`, `catalog.jsonl`, `hnsw.faiss`, `manifest.json`).
+`scripts/build_artifacts.py` does all the heavy work once: parsing, text encoding, joining the
+precomputed image vectors, and HNSW construction. It writes `artifacts/` (`blocks.npy`, `catalog.jsonl`, `hnsw.faiss`, `manifest.json`).
 The service only *loads* these. If the configured weights or HNSW parameters differ from the
 manifest, the graph is rebuilt in memory from the stored blocks (seconds); the text encoder never
 re-runs at serving time.
@@ -185,15 +203,19 @@ random queries (k = 10):
 | encoder | weights | backend | also-bought hit@10 | recall@10 | category@10 | brand@10 | price drift | ms/query | feature build |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|
 | – | random baseline | – | 0.002 | 0.001 | 0.047 | 0.001 | 0.613 | – | – |
-| tfidf | structured only (no text) | exact | 0.382 | 0.190 | 0.987 | 0.420 | 0.080 | 1.06 | 3.7 s |
+| tfidf | structured only (no text/image) | exact | 0.382 | 0.190 | 0.987 | 0.420 | 0.080 | 1.06 | 3.7 s |
 | tfidf | text only | exact | 0.305 | 0.180 | 0.688 | 0.271 | 0.316 | 1.05 | 3.7 s |
 | tfidf | blend, hand-set v0 | exact | 0.440 | 0.254 | 0.953 | 0.408 | 0.178 | 1.05 | 3.7 s |
-| **tfidf** | **blend, tuned** | exact | **0.461** | 0.255 | 0.972 | 0.383 | 0.135 | 1.05 | 3.7 s |
-| tfidf | blend, tuned | **hnsw** | 0.460 | 0.254 | 0.971 | 0.383 | 0.135 | **0.16** | 3.7 s |
+| tfidf | blend, tuned (no image) | exact | 0.461 | 0.255 | 0.972 | 0.383 | 0.135 | 1.05 | 3.7 s |
+| tfidf | blend, tuned (no image) | **hnsw** | 0.460 | 0.254 | 0.971 | 0.383 | 0.135 | **0.16** | 3.7 s |
 | minilm | text only | exact | 0.451 | 0.290 | 0.722 | 0.410 | 0.280 | 1.50 | 45 s |
 | minilm | blend, hand-set v0 | exact | 0.526 | 0.312 | 0.961 | 0.471 | 0.162 | 1.49 | 45 s |
-| **minilm** | **blend, tuned** | exact | **0.532** | 0.300 | 0.981 | 0.431 | 0.121 | 1.48 | 45 s |
-| minilm | blend, tuned | **hnsw** | 0.531 | 0.299 | 0.981 | 0.430 | 0.121 | **0.17** | 45 s |
+| minilm | blend, tuned (no image) | exact | 0.532 | 0.300 | 0.981 | 0.431 | 0.121 | 1.48 | 45 s |
+| minilm | blend, tuned (no image) | **hnsw** | 0.531 | 0.299 | 0.981 | 0.430 | 0.121 | **0.17** | 45 s |
+| – | CLIP image only | exact | 0.306 | 0.116 | 0.599 | 0.092 | 0.363 | 1.35 | offline |
+| tfidf | blend + CLIP image | exact | 0.519 | 0.279 | 0.953 | 0.362 | 0.154 | 1.35 | 3.8 s |
+| **minilm** | **blend + CLIP image (default)** | exact | **0.605** | **0.328** | 0.969 | 0.412 | 0.143 | 1.84 | 48 s |
+| minilm | blend + CLIP image (default) | **hnsw** | 0.604 | 0.327 | 0.969 | 0.412 | 0.143 | **0.49** | 48 s |
 
 What this says:
 
@@ -204,9 +226,51 @@ What this says:
 3. **The accurate model costs nothing at serving time.** Queries are *by product id*, so all
    embeddings are precomputed. MiniLM only costs build time (45 s vs 4 s) and a torch install *in the
    Docker builder stage*. That's why the **Docker image defaults to MiniLM**, while the library default
-   stays TF-IDF (no heavy dependency, works offline). `--build-arg ENCODER=tfidf` gives the lean build.
+   stays TF-IDF (no heavy dependency, works offline). `--build-arg ENCODER=tfidf` gives a faster build
+   with no model download; the serving image is about the same size either way (1.07 vs 1.19 GB),
+   because torch never ships in it.
 4. **HNSW loses nothing measurable in quality** (≤ 0.001 on every metric) while cutting search time
-   about 9×.
+   about 4–9×. (The HNSW rows with images search to a fixed depth of 100 for prefix-consistent
+   results, see [Ranking rules](#ranking-rules), hence 0.49 ms rather than 0.17 ms.)
+5. **Images give the largest single gain** (0.532 → 0.605), see the next section.
+
+### Images: the largest single gain
+
+The exercise lists *image* among the attributes, and every product has photo URLs, so the image is a
+block like any other ([`reports/image_comparison.md`](reports/image_comparison.md)):
+
+1. **Fetch** ([`scripts/fetch_images.py`](scripts/fetch_images.py)): the first photo per product at a
+   256-px rendition (~10 KB instead of ~35 KB), deduplicated by URL, resumable, with retries.
+   29,861 of 30,000 products (99.5%) have a photo; 134 URLs return 404.
+2. **Embed** ([`scripts/embed_images.py`](scripts/embed_images.py)) with two models, to compare a
+   classic CNN against a modern vision-language model:
+   - **ResNet-50** (He et al., 2016; ImageNet weights), 2048-d pooled features, the suggested CNN baseline.
+   - **CLIP ViT-B/32** (Radford et al., *Learning Transferable Visual Models From Natural Language
+     Supervision*, 2021), 512-d. Trained on image-caption pairs, so it encodes *style*
+     ("floral printed kurti") rather than ImageNet object classes.
+3. **PCA to 128-d**, which costs nothing measurable (see [Dimensionality reduction](#dimensionality-reduction)),
+   then ship as an 8 MB `data/image_embeddings.npz`. The Docker build reads that file, so it stays
+   offline and reproducible; no vision model runs at serving time.
+4. **Fallback:** a product without a usable photo gets a zero image block, so it is ranked on its
+   other attributes, the same rule as every missing attribute.
+
+Held-out results (same queries and metrics as above):
+
+| text encoder | image | hit@10 | recall@10 | category@10 | price drift |
+|---|---|---:|---:|---:|---:|
+| MiniLM | none (previous default) | 0.532 | 0.300 | 0.981 | 0.121 |
+| MiniLM | ResNet50 | 0.588 | 0.324 | 0.967 | 0.147 |
+| **MiniLM** | **CLIP (default)** | **0.605** | **0.328** | 0.969 | 0.143 |
+| TF-IDF | none | 0.461 | 0.255 | 0.972 | 0.135 |
+| TF-IDF | CLIP | 0.519 | 0.279 | 0.953 | 0.154 |
+
+- **Images help clearly:** +0.073 hit@10 with MiniLM, +0.058 with TF-IDF, about 4–5 standard errors.
+  The small cost is a point of category@10 and some price drift, because a photo says nothing about price.
+- **CLIP over ResNet50:** decisive on images alone (hit@10 0.306 vs 0.231, category@10 0.60 vs 0.53).
+  In the blend the gap is about one standard error, and the weights were tuned with CLIP.
+- **Weight:** on the tuning split hit@10 plateaus at 0.62–0.63 for image weights 0.3–0.7 (grid units).
+  The default takes the low end with category kept higher: that keeps category@10 near 0.97 instead
+  of 0.92, and leans less on a signal that 0.5% of products lack.
 
 ### Are newer embedding models better? Measured: not meaningfully
 
@@ -223,7 +287,7 @@ queries; e5 got its required `"query: "` prefix
 | e5-small-v2 (2022) | 0.463 | 0.519 | 0.271 | 0.987 | 0.097 | 107 s |
 | gte-small (2023) | **0.464** | 0.522 | 0.268 | 0.987 | **0.096** | 712 s\* |
 
-*"Blend" uses the default (tuned) weights.* Only 1,173 of the 2,000 queries have co-purchase ground
+*"Blend" uses the text-era tuned weights, without images.* Only 1,173 of the 2,000 queries have co-purchase ground
 truth, so hit@10 has a **standard error of about ±0.015**.
 
 - **On text alone, the newer models are only marginally better** (+0.004 to +0.013 hit@10), well within noise.
@@ -236,7 +300,8 @@ truth, so hit@10 has a **standard error of about ±0.015**.
 **Conclusion:** once text is combined with the structured attributes, the encoder generation stops
 mattering much here, because the structured attributes carry much of the signal. MiniLM stays the
 default as the fastest model with statistically equal quality. A larger jump would need a different
-*kind* of signal (images, or weights learned from behaviour; see below), not a newer text model.
+*kind* of signal (images, or weights learned from behaviour), not a newer text model. The image
+block above confirms this: it adds +0.07, five times what any text-model swap moved.
 \*gte-small's encode time is an outlier, likely thermal throttling late in the run on a laptop; it
 has the same architecture size as the others.
 
@@ -274,6 +339,9 @@ The image extends the provided sample. It keeps `uvicorn app:app` on port 8000 a
 - **Multi-stage build.** The *builder* installs torch (CPU-only wheel; the default PyPI wheel bundles
   ~2.5 GB of CUDA), unzips the data and runs `build_artifacts.py`. The *runtime* stage copies only
   the serving venv (no torch, no raw data) and the precomputed artifacts. Startup is about 1 s.
+  Of the 1.19 GB image, the serving venv is ~480 MB (mostly SciPy, pandas, scikit-learn) and the
+  artifacts ~160 MB. Dropping pandas/scikit-learn from the serving path (they are only needed to
+  *build* features) would be the next size win.
 - **Production hygiene.**
   - Non-root user and a `HEALTHCHECK` on `/readyz`.
   - The dependency layers come from `uv.lock` (`--frozen`), so builds are reproducible.
@@ -286,7 +354,7 @@ The image extends the provided sample. It keeps `uvicorn app:app` on port 8000 a
   - 2 replicas and a rolling update with `maxUnavailable: 0`.
   - Probes: startup and readiness on `/readyz`, liveness on `/healthz`.
   - Hardened security context: non-root, read-only root filesystem, all capabilities dropped.
-  - Resources sized from **measured** RSS (606 MiB with the MiniLM index), not guessed.
+  - Resources sized from **measured** RSS (~600 MiB with the MiniLM + CLIP index), not guessed.
 - **ConfigMap.** `SIM_BACKEND`, `SIM_HNSW_EF_SEARCH`, cache size and weights are all tunable without
   rebuilding the image. The encoder is *not*: it is baked into the artifacts. Setting a different
   `SIM_ENCODER` fails fast at startup with an error that names the right `--build-arg`.
@@ -294,6 +362,20 @@ The image extends the provided sample. It keeps `uvicorn app:app` on port 8000 a
 - **The index is baked into the image**, so pods are stateless and scaling is trivial. At much larger
   scale I'd move artifacts to object storage or a PVC and load them in an init container, so data
   refreshes don't need a new image.
+
+**Deployed and tested on a local kind cluster** (kind v0.33, Kubernetes v1.37):
+
+| Check | Result |
+|---|---|
+| `kubectl apply -k k8s/`, rollout | 2/2 pods Ready in ~6 s; HPA and PDB created |
+| `scripts/smoke_test.py` through `kubectl port-forward svc/product-similarity` | all checks pass |
+| Rolling restart under continuous in-cluster traffic (~75 req/s, client pod hitting the Service DNS) | **25 of 5,535 requests failed** without a `preStop` hook; **0 of 5,815** with it, and 0 of 5,341 again after redeploying the image-enabled build |
+
+The failures are the standard Kubernetes shutdown race: endpoint removal and SIGTERM happen in
+parallel, so kube-proxy briefly keeps routing to a pod that is already stopping. The Deployment now
+has a 5 s `preStop` sleep, so a terminating pod keeps serving until it has left the Service.
+The HPA shows `cpu: <unknown>` on kind, because kind ships without metrics-server; it works on
+any cluster that has one.
 
 ---
 
@@ -316,7 +398,7 @@ with N instead of linearly.
 
 | Option | Why not (here) |
 |---|---|
-| Brute force | Exact and simple. It is the *right* choice at 30k (1 ms) and stays as the `exact` backend and ground truth, but cost grows linearly (44 ms p50 / 132 ms p99 at 1M) |
+| Brute force | Exact and simple. It is the *right* choice at 30k (1 ms) and stays as the `exact` backend and ground truth, but cost grows linearly (57 ms p50 at 1M, d = 883) |
 | Annoy (random-projection trees) | Lower recall per unit of latency than HNSW on ann-benchmarks; static index |
 | IVF / IVF-PQ (FAISS) | Needs a k-means training step and `nprobe` tuning. PQ trades recall for memory, which we don't need below ~10⁸ vectors |
 | ScaNN / DiskANN | Excellent, but heavier operationally for this size |
@@ -348,24 +430,26 @@ inner product wins. It is the default, and the reduction stays available as `SIM
 
 ### Benchmark ([`reports/benchmark.md`](reports/benchmark.md))
 
-Single-query latency on an Apple-silicon laptop, d = 499, M = 32, efConstruction = 200, k = 10. Sizes
-above 30k are the real vectors jittered with noise, which keeps the real cluster structure; i.i.d.
-random vectors would make ANN look unrealistically bad.
+Single-query latency on an Apple-silicon laptop with the **shipped vectors** (MiniLM text + CLIP
+image + structured blocks, d = 883), M = 32, efConstruction = 200, k = 10. Sizes above 30k are the
+real vectors jittered with noise, which keeps the real cluster structure; i.i.d. random vectors
+would make ANN look unrealistically bad.
 
 | N | index | efSearch | recall@10 | p50 ms | p99 ms | build | memory |
 |---:|---|---:|---:|---:|---:|---:|---:|
-| 30k | exact | – | 1.000 | 1.03 | 1.22 | – | 57 MiB |
-| 30k | HNSW | 64 | 0.998 | 0.10 | 0.16 | 1.5 s | 64 MiB |
-| 300k | exact | – | 1.000 | 10.6 | 20.0 | – | 571 MiB |
-| 300k | HNSW | 64 | 0.995 | 0.22 | 0.35 | 64 s | 644 MiB |
-| 1M | exact | – | 1.000 | **43.8** | **131.6** | – | 1.9 GiB |
-| 1M | HNSW | 64 | 0.985 | **0.12** | **0.21** | 123 s | 2.1 GiB |
-| 1M | HNSW | 128 | 0.989 | 0.21 | 0.36 | 123 s | 2.1 GiB |
+| 30k | exact | – | 1.000 | 1.69 | 2.15 | – | 101 MiB |
+| 30k | HNSW | 64 | 0.998 | 0.24 | 0.43 | 2.8 s | 108 MiB |
+| 300k | exact | – | 1.000 | 17.4 | 25.4 | – | 1.0 GiB |
+| 300k | HNSW | 64 | 0.995 | 0.26 | 0.54 | 64 s | 1.1 GiB |
+| 1M | exact | – | 1.000 | **56.9** | **69.7** | – | 3.3 GiB |
+| 1M | HNSW | 64 | 0.999 | **0.21** | **0.48** | 249 s | 3.5 GiB |
+| 1M | HNSW | 128 | 1.000 | 0.36 | 0.65 | 249 s | 3.5 GiB |
 
-Brute force grows linearly and is already at a 132 ms p99 at 1M; HNSW stays sub-millisecond.
-(The slightly lower recall at 1M is partly an artefact of the synthetic scale-up: jittered copies of
-the same product are near-ties, so "the true top 10" is ambiguous.) `efSearch = 64` is the default:
-at 30k it is within 0.001 of exact on every quality metric above.
+Brute force grows linearly (57 ms p50 at 1M); HNSW stays sub-millisecond and roughly flat in N,
+about **265× faster at 1M** with recall@10 0.999. `efSearch = 64` is the default: at 30k it is within
+0.001 of exact on every quality metric above. An earlier run with the 499-d TF-IDF vectors showed the
+same shape (1M: 43.8 ms exact vs 0.12 ms HNSW); the higher dimension mainly costs memory and build
+time, which is where the PQ compression below would come in.
 
 ### Dimensionality reduction
 
@@ -373,6 +457,19 @@ The README suggested PCA or t-SNE before similarity:
 
 - **TF-IDF path:** already reduced. The sparse ~100k-term matrix becomes 128 dims via truncated SVD
   (LSA), the sparse-friendly equivalent of PCA.
+- **Image path: PCA, measured.** CLIP (512-d) and ResNet50 (2048-d) image embeddings are reduced to
+  128 dims with PCA before they become the image block. Image-only retrieval on the same held-out
+  queries shows PCA-128 costs nothing measurable, while the file shrinks 4× (CLIP) / 16× (ResNet):
+
+  | dims | CLIP hit@10 | CLIP category@10 | ResNet50 hit@10 | ResNet50 category@10 |
+  |---:|---:|---:|---:|---:|
+  | full (512 / 2048) | 0.299 | 0.599 | 0.235 | 0.530 |
+  | 256 | 0.308 | 0.600 | 0.233 | 0.526 |
+  | **128 (shipped)** | **0.306** | **0.599** | 0.230 | 0.526 |
+  | 64 | 0.292 | 0.597 | 0.217 | 0.519 |
+  | 32 | 0.255 | 0.589 | 0.209 | 0.507 |
+
+  PCA-128 keeps 85% (CLIP) / 82% (ResNet50) of the variance. Quality only falls off below 64 dims.
 - **t-SNE:** deliberately not used. It is a visualisation method: non-parametric (no transform for
   new products), it doesn't preserve global distances, and it is O(N²)-ish.
 - **At 100M+ products:** the next step would be PCA to ~64 dims on the text block plus
@@ -383,9 +480,11 @@ The README suggested PCA or t-SNE before similarity:
 
 ## Trade-offs, limitations, next steps
 
-- **Images are not used yet.** Downloading and embedding 30k images was out of proportion for this
-  exercise, but the design is ready for it: a CLIP image embedding is just another block with its own
-  weight. Products without an image get a zero block, the same fallback as every other attribute.
+- **Image embeddings are a snapshot.** They are computed offline from one photo per product and
+  shipped as a file. New products need `fetch_images.py` + `embed_images.py` (incremental runs reuse
+  downloaded files). In production this would be an embedding job triggered on catalogue updates.
+  Only the first photo is used; averaging all photos, or a fashion-tuned CLIP (e.g. FashionCLIP),
+  are the obvious next experiments.
 - **Variants cluster together.** Identical titles in different sizes or colours (e.g. several
   "Pepe Jeans Women's Solid T-Shirt") rank at the top, which is good for "more like this" and less
   good for discovery. A product page might want to collapse variants (group by normalised title) or
@@ -399,7 +498,7 @@ The README suggested PCA or t-SNE before similarity:
   catalogue, so new products would need an occasional refit. MiniLM has no such issue, which is
   another point in its favour.
 - **Memory.** Vectors are held three times (unweighted for `explain`, weighted, FAISS's copy). That's
-  fine at 30k (606 MiB RSS); at scale `explain` would derive from the weighted copy.
+  fine at 30k (~600 MiB RSS); at scale `explain` would derive from the weighted copy.
 
 ### Project layout
 
@@ -408,12 +507,14 @@ app.py                       FastAPI service (Part 2)
 src/similarity/
   config.py                  settings (env SIM_*), weights and their rationale
   data.py                    loading + cleaning (sentinels, units, shrinkage, brands, colours)
-  features.py                block embedding, TF-IDF/LSA + MiniLM encoders
+  features.py                block embedding, TF-IDF/LSA + MiniLM encoders, image block
   index.py                   ExactIndex, HnswIndex (FAISS), ip-vs-L2 notes
   engine.py                  SimilarityEngine + find_similar_products (Part 1)
-scripts/                     build_artifacts, evaluate, tune_weights, benchmark, smoke_test
-tests/                       60 tests (fixture covers sentinel weight, dup ASIN, Generic brand, …)
-reports/                     generated evaluation + benchmark tables
+scripts/                     build_artifacts, fetch_images, embed_images, evaluate, tune_weights,
+                             benchmark, smoke_test
+tests/                       64 tests (fixture covers sentinel weight, dup ASIN, Generic brand, …)
+reports/                     generated evaluation, benchmark, encoder and image comparisons
+data/archive.zip             the dataset; data/image_embeddings.npz: precomputed CLIP vectors (PCA-128)
 k8s/                         deployment, service, configmap, HPA + PDB, kustomization
 docs/EXERCISE.md             the original exercise statement
 ```

@@ -31,12 +31,16 @@ import pandas as pd
 from similarity.config import DEFAULT_WEIGHTS, HAND_SET_WEIGHTS, Settings
 from similarity.data import load_catalog
 from similarity.engine import SimilarityEngine
-from similarity.features import build_blocks
+from similarity.features import BlockMatrix, build_blocks, load_image_block
 
 PRESETS: dict[str, dict[str, float]] = {
-    "structured only (no text)": {**DEFAULT_WEIGHTS, "text": 0.0},
+    "structured only (no text/image)": {**DEFAULT_WEIGHTS, "text": 0.0, "image": 0.0},
     "text only": {"text": 1.0},
+    "image only": {"image": 1.0},
     "blend (hand-set v0)": dict(HAND_SET_WEIGHTS),
+    # The previous default (tuned before the image block existed): the "no image" baseline.
+    "blend (tuned, no image)": {"text": 0.30, "category": 0.20, "brand": 0.10, "price": 0.20,
+                                "colour": 0.05, "rating": 0.03, "weight": 0.02},
     "blend (tuned, default)": dict(DEFAULT_WEIGHTS),
 }
 
@@ -85,11 +89,25 @@ def evaluate(neighbours: dict[int, list[int]], catalog: pd.DataFrame, targets: d
     }
 
 
+def with_image_model(catalog, settings, text_blocks, image_model):
+    """Swap in ``data/image_embeddings_<model>.npz`` as the image block, reusing the (slow) text block."""
+    if image_model is None:
+        return text_blocks, (text_blocks.info.get("image") or {}).get("model") or "none"
+    img, _ = load_image_block(
+        catalog, settings.model_copy(update={"image_embeddings_path": Path(f"data/image_embeddings_{image_model}.npz")}))
+    data = text_blocks.data.copy()
+    data[:, text_blocks.slices["image"]] = img
+    return BlockMatrix(data=data, slices=text_blocks.slices, info={"image": {"model": image_model}}), image_model
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--encoders", nargs="+", default=["tfidf", "minilm"])
     ap.add_argument("--transformer-models", nargs="*", default=[],
                     help="extra sentence-transformer models to compare (encoder=minilm with this model)")
+    ap.add_argument("--image-models", nargs="+", default=[None],
+                    help="compare image embedding files data/image_embeddings_<model>.npz "
+                         "(default: the shipped data/image_embeddings.npz)")
     ap.add_argument("--queries", type=int, default=2000)
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--out", type=Path, default=Path("reports/evaluation.md"))
@@ -106,26 +124,36 @@ def main() -> None:
     rows = []
     # Baseline: random neighbours (sets the floor for every metric).
     rand = {int(q): [int(j) for j in rng.choice(len(catalog), args.k, replace=False) if j != q][: args.k] for q in queries}
-    rows.append({"encoder": "-", "weights": "random baseline", "backend": "-", **evaluate(rand, catalog, targets)})
+    rows.append({"encoder": "-", "image": "-", "weights": "random baseline", "backend": "-", **evaluate(rand, catalog, targets)})
 
     runs = [(enc, base.model_copy(update={"encoder": enc})) for enc in args.encoders]
     runs += [(m.split("/")[-1], base.model_copy(update={"encoder": "minilm", "minilm_model": m}))
              for m in args.transformer_models]
+    image_only_presets = {"image only", "blend (tuned, default)"}
     for enc, settings in runs:
         t0 = time.perf_counter()
-        blocks = build_blocks(catalog, settings)
+        text_blocks = build_blocks(catalog, settings)
         encode_s = time.perf_counter() - t0
-        print(f"[{enc}] features built in {encode_s:.1f}s (dim={blocks.dim})")
-        for preset, weights in PRESETS.items():
-            for backend in (["exact", "hnsw"] if "default" in preset else ["exact"]):
-                s = settings.model_copy(update={"weights": Settings(weights=weights).weights, "backend": backend})
-                engine = SimilarityEngine(catalog, blocks, s)
-                t0 = time.perf_counter()
-                nn = {int(q): [engine.row_of(m.product_id) for m in engine.similar(str(ids[q]), args.k)] for q in queries}
-                ms = (time.perf_counter() - t0) / len(queries) * 1e3
-                rows.append({"encoder": enc, "weights": preset, "backend": backend,
-                             **evaluate(nn, catalog, targets), "ms/query": ms, "feature build (s)": encode_s})
-                print(f"  {preset:28s} {backend:5s} done")
+        print(f"[{enc}] features built in {encode_s:.1f}s (dim={text_blocks.dim})")
+        for n_img, image_model in enumerate(args.image_models):
+            blocks, img_label = with_image_model(catalog, settings, text_blocks, image_model)
+            for preset, weights in PRESETS.items():
+                if n_img > 0 and preset not in image_only_presets:
+                    continue  # presets without an image weight are identical across image models
+                if preset == "image only" and img_label == "none":
+                    continue  # no image embeddings available
+                for backend in (["exact", "hnsw"] if "default" in preset else ["exact"]):
+                    w = Settings(weights=weights).weights
+                    s = settings.model_copy(update={"weights": w, "backend": backend})
+                    engine = SimilarityEngine(catalog, blocks, s)
+                    t0 = time.perf_counter()
+                    nn = {int(q): [engine.row_of(m.product_id) for m in engine.similar(str(ids[q]), args.k)]
+                          for q in queries}
+                    ms = (time.perf_counter() - t0) / len(queries) * 1e3
+                    rows.append({"encoder": enc, "image": img_label if w["image"] > 0 else "-", "weights": preset,
+                                 "backend": backend, **evaluate(nn, catalog, targets), "ms/query": ms,
+                                 "feature build (s)": encode_s})
+                    print(f"  {img_label:9s} {preset:32s} {backend:5s} done")
 
     df = pd.DataFrame(rows)
     table = df.to_markdown(index=False, floatfmt=".3f")
