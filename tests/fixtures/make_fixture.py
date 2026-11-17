@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 
+
 def rec(uid, name, brand=None, price="499.00", weight="999999999", rating="4.0", reviews=None,
         child="MensT_Shirts", colour=None, asin=None):
     r = {"uniq_id": uid, "asin": asin or f"ASIN{uid}", "product_name": name, "weight": weight,

@@ -2,9 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as app_module
-from similarity.engine import SimilarityEngine
-
 from conftest import make_settings
+from similarity.engine import SimilarityEngine
 
 
 @pytest.fixture(scope="module")

@@ -82,7 +82,8 @@ def main() -> int:
     t0 = time.perf_counter()
     status: dict[str, str] = {}
     with ThreadPoolExecutor(args.workers) as pool:
-        for i, (url, st) in enumerate(zip(urls, pool.map(lambda u: fetch(u, file_for(u, args.out)), urls)), 1):
+        results = pool.map(lambda u: fetch(u, file_for(u, args.out)), urls)
+        for i, (url, st) in enumerate(zip(urls, results, strict=True), 1):
             status[url] = st
             if i % 2000 == 0:
                 print(f"  {i}/{len(urls)}  {time.perf_counter() - t0:.0f}s", flush=True)
@@ -90,7 +91,7 @@ def main() -> int:
     with open(args.out / "index.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["uniq_id", "file", "status"])
-        for pid, url in zip(catalog["uniq_id"], catalog["image_url"]):
+        for pid, url in zip(catalog["uniq_id"], catalog["image_url"], strict=True):
             st = status.get(url, "no-url") if isinstance(url, str) else "no-url"
             ok = st in ("ok", "cached")
             w.writerow([pid, file_for(url, args.out).name if ok else "", st])

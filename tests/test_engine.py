@@ -1,11 +1,10 @@
 import numpy as np
 import pytest
 
+from conftest import make_settings
 from similarity import engine as engine_mod
 from similarity.engine import ProductNotFoundError, SimilarityEngine
 from similarity.features import BLOCK_ORDER, arc_encode, build_blocks
-
-from conftest import make_settings
 
 
 def test_returns_exactly_k_and_excludes_self(engine):

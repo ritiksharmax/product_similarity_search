@@ -15,7 +15,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import List
@@ -224,7 +224,7 @@ class SimilarityEngine:
             ]
         return [
             Match(str(self.ids[r]), round(float(s), 6), breakdown[j] if breakdown else None)
-            for j, (r, s) in enumerate(zip(rows, scores))
+            for j, (r, s) in enumerate(zip(rows, scores, strict=True))
         ]
 
     def find_similar_products(self, product_id: str, num_similar: int) -> List[str]:

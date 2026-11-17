@@ -76,6 +76,7 @@ Tests and reports:
 
 ```bash
 uv run pytest                                   # 64 tests: parsers, engine invariants, image block, API, ANN recall
+uvx ruff check .                                # lint (config in pyproject.toml)
 uv run python scripts/smoke_test.py http://localhost:8000   # end-to-end checks against a running service
 uv run python scripts/evaluate.py --image-models clip resnet50   # -> reports/evaluation.md (needs --extra minilm)
 uv run python scripts/benchmark.py --scales 30000 300000 1000000   # -> reports/benchmark.md

@@ -54,7 +54,7 @@ def also_bought_targets(catalog: pd.DataFrame) -> dict[int, set[int]]:
     for i, n in enumerate(catalog["product_name"]):
         by_name[_norm(n)].add(i)
     out = {}
-    for i, (name, ab) in enumerate(zip(catalog["product_name"], catalog["also_bought"])):
+    for i, (name, ab) in enumerate(zip(catalog["product_name"], catalog["also_bought"], strict=True)):
         own = _norm(name)
         targets = set().union(*(by_name.get(_norm(a), set()) for a in ab if _norm(a) != own)) - {i} if ab else set()
         if targets:
@@ -93,8 +93,8 @@ def with_image_model(catalog, settings, text_blocks, image_model):
     """Swap in ``data/image_embeddings_<model>.npz`` as the image block, reusing the (slow) text block."""
     if image_model is None:
         return text_blocks, (text_blocks.info.get("image") or {}).get("model") or "none"
-    img, _ = load_image_block(
-        catalog, settings.model_copy(update={"image_embeddings_path": Path(f"data/image_embeddings_{image_model}.npz")}))
+    path = Path(f"data/image_embeddings_{image_model}.npz")
+    img, _ = load_image_block(catalog, settings.model_copy(update={"image_embeddings_path": path}))
     data = text_blocks.data.copy()
     data[:, text_blocks.slices["image"]] = img
     return BlockMatrix(data=data, slices=text_blocks.slices, info={"image": {"model": image_model}}), image_model
@@ -123,8 +123,10 @@ def main() -> None:
 
     rows = []
     # Baseline: random neighbours (sets the floor for every metric).
-    rand = {int(q): [int(j) for j in rng.choice(len(catalog), args.k, replace=False) if j != q][: args.k] for q in queries}
-    rows.append({"encoder": "-", "image": "-", "weights": "random baseline", "backend": "-", **evaluate(rand, catalog, targets)})
+    rand = {int(q): [int(j) for j in rng.choice(len(catalog), args.k, replace=False) if j != q][: args.k]
+            for q in queries}
+    rows.append({"encoder": "-", "image": "-", "weights": "random baseline", "backend": "-",
+                 **evaluate(rand, catalog, targets)})
 
     runs = [(enc, base.model_copy(update={"encoder": enc})) for enc in args.encoders]
     runs += [(m.split("/")[-1], base.model_copy(update={"encoder": "minilm", "minilm_model": m}))

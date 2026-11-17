@@ -5,7 +5,7 @@ from similarity.index import ExactIndex, HnswIndex
 
 
 def _recall(a, b):
-    return np.mean([len(set(x) & set(y)) / len(x) for x, y in zip(a, b)])
+    return np.mean([len(set(x) & set(y)) / len(x) for x, y in zip(a, b, strict=True)])
 
 
 def test_exact_index_matches_numpy():

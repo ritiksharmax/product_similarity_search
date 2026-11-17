@@ -46,8 +46,9 @@ def main() -> None:
 
     rows = []
     for values in itertools.product(*grid.values()):
-        weights = {**dict(zip(grid, values)), **fixed}
-        engine = SimilarityEngine(catalog, blocks, base.model_copy(update={"weights": Settings(weights=weights).weights}))
+        weights = {**dict(zip(grid, values, strict=True)), **fixed}
+        settings = base.model_copy(update={"weights": Settings(weights=weights).weights})
+        engine = SimilarityEngine(catalog, blocks, settings)
         nn = {int(q): [engine.row_of(m.product_id) for m in engine.similar(str(ids[q]), 10)] for q in queries}
         rows.append({**weights, **evaluate(nn, catalog, targets)})
     df = pd.DataFrame(rows).sort_values(["also-bought hit@10", "also-bought recall@10"], ascending=False)

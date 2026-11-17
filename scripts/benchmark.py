@@ -22,7 +22,7 @@ from similarity.index import ExactIndex, HnswIndex
 
 
 def recall_at_k(truth: np.ndarray, got: np.ndarray) -> float:
-    return float(np.mean([len(set(t) & set(g)) / len(t) for t, g in zip(truth, got)]))
+    return float(np.mean([len(set(t) & set(g)) / len(t) for t, g in zip(truth, got, strict=True)]))
 
 
 def latency_ms(index, Q: np.ndarray, k: int) -> tuple[float, float]:

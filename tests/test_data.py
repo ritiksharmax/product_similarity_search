@@ -4,8 +4,13 @@ import pandas as pd
 import pytest
 
 from similarity.data import (
-    normalise_brand, parse_colours, parse_discount, parse_price, parse_review_count,
-    parse_weight_grams, shrink_ratings,
+    normalise_brand,
+    parse_colours,
+    parse_discount,
+    parse_price,
+    parse_review_count,
+    parse_weight_grams,
+    shrink_ratings,
 )
 
 

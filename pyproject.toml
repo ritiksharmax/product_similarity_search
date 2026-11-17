@@ -51,3 +51,15 @@ testpaths = ["tests"]
 pythonpath = [".", "tests"]
 filterwarnings = ["ignore::DeprecationWarning:fastapi.testclient"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "SIM", "I"]
+# Fixture rows and parser test tables read better as one record per line.
+per-file-ignores = { "tests/fixtures/*" = ["E501", "E701"], "tests/test_data.py" = ["E501"] }
+
+[tool.ruff.lint.isort]
+known-first-party = ["similarity", "app", "conftest", "evaluate"]
