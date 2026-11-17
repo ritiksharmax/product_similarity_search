@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: product-similarity-config
+  labels: {app.kubernetes.io/name: product-similarity}
+data:
+  # Tunable without rebuilding the image. Changing weights or HNSW M makes each pod rebuild
+  # its HNSW graph in memory at startup (~2-5s at 30k products); the text embeddings are reused.
+  SIM_BACKEND: "hnsw"            # or "exact"
+  SIM_HNSW_EF_SEARCH: "64"       # recall/latency knob (see reports/benchmark.md)
+  SIM_CACHE_SIZE: "4096"         # LRU entries per pod for hot products
+  SIM_MAX_NUM_SIMILAR: "100"
+  # SIM_WEIGHTS: '{"text":0.3,"category":0.2,"brand":0.1,"price":0.2,"colour":0.05,"rating":0.03,"weight":0.02}'
+  OMP_NUM_THREADS: "1"           # match the CPU request; avoids OpenMP oversubscription
